@@ -1,0 +1,1 @@
+For Simplex takehome, building a dataset where each entry is a sample from one of 3 Mess3 processes (a type of Hidden Markov Model with 3 states), training a transformer on it and seeing if the resulting residual stream contains belief state geometry similar to what we would predict 
