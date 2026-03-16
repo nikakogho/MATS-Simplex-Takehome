@@ -74,6 +74,41 @@ The same exact Bayes machinery also gives a ground-truth simplex over process id
 
 These plots provide the target geometries against which I later compare decoded activations.
 
+## Preregistered Predictions
+
+### P0: Hidden-state beliefs will be linearly decodable from the residual stream
+A linear or affine map from residual activations to the exact Bayes hidden-state belief vectors should recover a geometry similar to the ground-truth simplex plots.
+
+#### P0.0.0. This will be with the last layer of residual stream
+
+#### P0.0.1. (alternative, low likelihood) last layer won't be enough, but a concatenation of all layers of the residual stream at a given prefix will contain this projectable value
+
+#### P0.1. Activations will organize more like a union of component-specific hidden-state belief geometries than like one single shared geometry
+Each will probably look like what our ground truth projections show
+
+#### P0.2. Alternative: the network may learn partially shared or factorized coordinates
+A single global geometry may still work reasonably well if the network separates “which process am I in” from “which hidden state am I in” in different directions of representation.
+
+I give this a lower but non-negligible likelihood. On one hand, the belief states are quite different from each other so one structure should not fit them.
+
+On the other hand, while they do produce different token outcomes, such that with perfect Bayesian inference, "Which Mess3 Process Generated These 16 Tokens?" is answerable on average with 65% certainty, this might not be a strong enough pressure to force differentiation.
+
+Had their underlying belief state geometries been closer, I would consider this much more likely.
+
+### P1: Process-identity beliefs will also be linearly decodable and trace a 2-simplex over {M1, M2, M3}
+I expect the residual stream to contain a decodable approximation to $P(M | x_{<=t})$, and for this process-belief geometry to resemble the sampled ground-truth process-simplex plot.
+
+#### P1.1: Later context positions will be more certain of which process is generating this run compared to earlier context positions
+
+#### P1.2: In the residual stream's extracted beliefs, certainty in process being the second or the third will be high more often than certainty of the first, due to how ground truth probabilities are
+
+#### P1.3. The process-belief geometry will be skewed rather than uniformly filling the simplex
+Because the three chosen processes are not equally easy to distinguish from typical sampled prefixes, I expect the reachable process-belief states in activation space to concentrate in a non-uniform region of the simplex, just as in our ground-truth probabilities chart.
+
+### P2: I expect that early in training, a factorized view or even directly assuming a single Mess3 process behind the tokens will be assumed, and later the model will shift to representing each separately
+I will attempt to capture this during training, or to retrain the model afterward with same hyperparams if I fail to capture it the first time due to not looking at the right place.
+I will treat this as a training-dynamics prediction: earlier checkpoints should be better explained by simpler or more shared readouts, while later checkpoints should show stronger separation between process-specific and hidden-state-specific structure.
+
 ## Model And Training Setup
 
 - Dataset size: 30k train / 3k val / 3k test, balanced across components
