@@ -5,10 +5,14 @@ For Simplex takehome, building a dataset where each entry is a sample from one o
 2. x = 0.18 and α = 0.95
 3. x = 0.05 and α = 0.45
 
-Chose these numbers to make them reasonably likely to be differentiated under perfect bayesian inference
+Chose these numbers to make them reasonably likely to be differentiated under perfect bayesian inference.
+
+Each sequence emits tokens A, B or C
 
 ### Hidden Markov Models Representing The Mess3 Processes
 ![Markov Models](assets/HMMs.png)
 
 ### Belief State Geometry Of Each Depending On Prefix Length (Chaos Game-Like Run)
+We can depict the belief state (probability of being in state 1, 2 or 3 at a given point) as a point on a 2-simplex (triangle) over each prefix of a given sequence. We can plot this for many sequences to obtain the belief state geometry:
 ![Geometry Each](assets/geometry_each.png)
+
