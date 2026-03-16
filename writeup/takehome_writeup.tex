@@ -142,6 +142,36 @@ The same exact Bayes machinery also gives a ground-truth simplex over process id
 
 These plots define the target geometries against which I later compare decoded activations.
 
+\section{Formal Reasoning and Intuition Behind the Prediction}
+
+The formal side of the prediction is based on the exact calculations I carried out in the setup notebook, rather than on a closed-form theorem about the final learned representation.
+
+First, for each fixed Mess3 component, I computed exact Bayes belief updates
+
+\begin{itemize}
+  \item $b_t(i) \propto q_t(i) E_{i,x_t}$
+  \item $q_{t+1} = b_t A$
+\end{itemize}
+
+and then enumerated all token prefixes up to a finite maximum length, mapping the resulting \texttt{filtered\_after\_obs} beliefs to the simplex. This showed directly that each component induces a structured reachable subset of the hidden-state simplex rather than an unstructured cloud.
+
+Second, for process identity, I computed exact HMM sequence log-likelihoods under each candidate component and converted them into prefix-wise component posteriors
+
+\begin{itemize}
+  \item $P(M=m \mid x_{\le t}) \propto P(x_{\le t} \mid M=m) P(M=m)$
+\end{itemize}
+
+using the forward algorithm. I used this both to visualize the ground-truth process-belief simplex and to run the component-identifiability diagnostic that guided parameter selection. In particular, I tracked average max component posterior and average true-component posterior as functions of prefix length, and then searched over candidate triples to find a regime where component identity at length 16 was meaningfully inferable but still nontrivial.
+
+These exact calculations motivate the representation prediction. A model that approaches Bayes-optimal next-token prediction should, at minimum, preserve enough information to approximate the relevant predictive quantities. In this setting, those quantities are the within-component predictive hidden-state belief $q_{t+1}$ and, in the mixture setting, the process posterior $P(M \mid x_{\le t})$. Since the setup notebook already showed that different components induce different reachable hidden-belief subsets, the natural expectation was not a single universal hidden-state geometry. The two most plausible possibilities were:
+
+\begin{itemize}
+  \item a union of component-specific hidden-state geometries
+  \item a partially factorized representation in which process identity is represented more globally, while within-component hidden-state belief is represented in more component-specific coordinates
+\end{itemize}
+
+The geometric intuition is similar but less formal. Early in a sequence, the model has seen little evidence, so both hidden state and process identity should be more ambiguous and the decoded geometry should overlap more. Later in the sequence, evidence accumulates, process identity should become sharper, and the geometry should move onto more structured subsets of the simplex. Across layers, I expected later layers to be more belief-like than embeddings or very early layers because they are closer to the network's actual next-token computation.
+
 \section{Preregistered Predictions}
 
 \subsection{P0: Hidden-state beliefs will be linearly decodable from the residual stream}
