@@ -7,8 +7,8 @@ For Simplex takehome, building a dataset where each entry is a sample from one o
 
 Chose these numbers to make them reasonably likely to be differentiated under perfect bayesian inference
 
-### Markov Models
+### Hidden Markov Models Representing The Mess3 Processes
 ![Markov Models](assets/HMMs.png)
 
-### Geometry Of Each
+### Belief State Geometry Of Each Depending On Prefix Length (Chaos Game-Like Run)
 ![Geometry Each](assets/geometry_each.png)
