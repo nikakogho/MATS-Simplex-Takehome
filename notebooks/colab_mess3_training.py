@@ -46,6 +46,7 @@ class ExperimentConfig:
     log_every_steps: int = 50
     n_cache_checkpoints: int = 10
     cache_subset_size: int = 512
+    geometry_plot_sequences_per_component: int = 3_000
     num_workers: int = 0
     output_root: str = "./takehome_outputs"
 
@@ -477,6 +478,12 @@ def balanced_cache_indices(component_ids: torch.Tensor, total_size: int) -> torc
     return out[torch.randperm(len(out))]
 
 
+def select_balanced_indices(component_ids: torch.Tensor, total_size: int) -> torch.Tensor:
+    if total_size >= len(component_ids):
+        return torch.arange(len(component_ids))
+    return balanced_cache_indices(component_ids, total_size)
+
+
 cache_indices = balanced_cache_indices(val_data["component_ids"], cfg.cache_subset_size)
 cache_inputs = val_data["tokens"][cache_indices][:, :-1]
 cache_targets_hidden = val_data["predictive_next"][cache_indices][:, : cfg.seq_len - 1]
@@ -617,6 +624,7 @@ def train_model(model: nn.Module):
             break
 
     model.load_state_dict(best_state)
+    history["best_epoch"] = best_epoch
     activation_caches["best"] = capture_activation_cache(
         model,
         cache_inputs,
@@ -637,9 +645,10 @@ def train_model(model: nn.Module):
 # %%
 model = TinyGPT(cfg).to(device)
 model, history, activation_caches, final_val_metrics, final_test_metrics = train_model(model)
+best_epoch = int(history["best_epoch"])
 
-print(f"Best-model val NLL: {final_val_metrics['loss']:.4f}")
-print(f"Best-model test NLL: {final_test_metrics['loss']:.4f}")
+print(f"Best-model val NLL (epoch {best_epoch:02d}): {final_val_metrics['loss']:.4f}")
+print(f"Best-model test NLL (epoch {best_epoch:02d}): {final_test_metrics['loss']:.4f}")
 print(f"Val Bayes NLL: {val_bayes_nll:.4f}")
 print(f"Test Bayes NLL: {test_bayes_nll:.4f}")
 
@@ -649,7 +658,7 @@ plt.plot(history["val_loss"], marker="o", label="Val")
 plt.axhline(val_bayes_nll, color="green", linestyle="--", label="Val Bayes")
 plt.xlabel("Epoch")
 plt.ylabel("NLL")
-plt.title("Training curves")
+plt.title(f"Training curves (best epoch {best_epoch:02d})")
 plt.legend()
 plt.show()
 
@@ -659,7 +668,7 @@ plt.plot(positions, final_val_metrics["per_position"], marker="o", label="Model 
 plt.plot(positions, val_bayes_by_pos, marker="o", label="Bayes val")
 plt.xlabel("Prediction position")
 plt.ylabel("NLL")
-plt.title("Model vs Bayes by position")
+plt.title(f"Model vs Bayes by position (best epoch {best_epoch:02d})")
 plt.legend()
 plt.show()
 
@@ -753,11 +762,11 @@ for ckpt_name, cache_blob in activation_caches.items():
             cache_blob, layer_name, "process_targets"
         )
 
-print("Hidden-state readout results (best checkpoint):")
+print(f"Hidden-state readout results (best checkpoint = epoch {best_epoch:02d}):")
 for layer_name in layers:
     print(layer_name, hidden_results["best"][layer_name])
 
-print("Process readout results (best checkpoint):")
+print(f"Process readout results (best checkpoint = epoch {best_epoch:02d}):")
 for layer_name in layers:
     print(layer_name, process_results["best"][layer_name])
 
@@ -779,7 +788,7 @@ plt.figure(figsize=(9, 4))
 for layer_name in layers:
     checkpoint_names, xs, ys = metric_curve(hidden_results, layer_name, "global", "r2")
     plt.plot(xs, ys, marker="o", label=f"Hidden {layer_name}")
-plt.xticks(xs, checkpoint_names, rotation=45)
+plt.xticks(xs, [checkpoint_label(name) for name in checkpoint_names], rotation=45)
 plt.ylabel("R^2")
 plt.title("Hidden-state readout quality across checkpoints")
 plt.legend()
@@ -790,7 +799,7 @@ plt.figure(figsize=(9, 4))
 for layer_name in layers:
     checkpoint_names, xs, ys = metric_curve(process_results, layer_name, "global", "r2")
     plt.plot(xs, ys, marker="o", label=f"Process {layer_name}")
-plt.xticks(xs, checkpoint_names, rotation=45)
+plt.xticks(xs, [checkpoint_label(name) for name in checkpoint_names], rotation=45)
 plt.ylabel("R^2")
 plt.title("Process readout quality across checkpoints")
 plt.legend()
@@ -831,6 +840,24 @@ def plot_simplex_points(ax, probs: np.ndarray, colors: np.ndarray, title: str, l
     return scatter
 
 
+def plot_simplex_points_fixed(ax, probs: np.ndarray, title: str, labels, color: str):
+    coords = simplex_to_xy(probs)
+    border = np.vstack([TRIANGLE, TRIANGLE[0]])
+    ax.plot(border[:, 0], border[:, 1], color="tab:blue")
+    ax.scatter(coords[:, 0], coords[:, 1], s=8, color=color, alpha=0.7)
+    for idx, label in enumerate(labels):
+        y = TRIANGLE[idx, 1] + (0.03 if idx == 2 else -0.03)
+        ax.text(TRIANGLE[idx, 0], y, label, ha="center")
+    ax.set_title(title)
+    ax.set_axis_off()
+
+
+def checkpoint_label(name: str) -> str:
+    if name == "best":
+        return f"best (epoch {best_epoch:02d})"
+    return name
+
+
 best_cache = activation_caches["best"]
 hidden_truth = best_cache["hidden_targets"].reshape(-1, 3).numpy()
 process_truth = best_cache["process_targets"].reshape(-1, 3).numpy()
@@ -859,13 +886,21 @@ scatter = plot_simplex_points(
     axes[0, 0], hidden_truth[-len(hidden_pred) :], positions[-len(hidden_pred) :], "Ground-truth hidden beliefs", STATE_NAMES
 )
 plot_simplex_points(
-    axes[0, 1], hidden_pred, positions[-len(hidden_pred) :], "Decoded hidden beliefs (block2, best)", STATE_NAMES
+    axes[0, 1],
+    hidden_pred,
+    positions[-len(hidden_pred) :],
+    f"Decoded hidden beliefs (block2, best epoch {best_epoch:02d})",
+    STATE_NAMES,
 )
 plot_simplex_points(
     axes[1, 0], process_truth[-len(process_pred) :], positions[-len(process_pred) :], "Ground-truth process beliefs", ["M1", "M2", "M3"]
 )
 plot_simplex_points(
-    axes[1, 1], process_pred, positions[-len(process_pred) :], "Decoded process beliefs (block2, best)", ["M1", "M2", "M3"]
+    axes[1, 1],
+    process_pred,
+    positions[-len(process_pred) :],
+    f"Decoded process beliefs (block2, best epoch {best_epoch:02d})",
+    ["M1", "M2", "M3"],
 )
 fig.colorbar(scatter, ax=axes.ravel().tolist(), label="prefix length")
 plt.tight_layout()
@@ -873,6 +908,7 @@ plt.show()
 
 metadata = {
     "config": asdict(cfg),
+    "best_epoch": best_epoch,
     "val_bayes_nll": val_bayes_nll,
     "test_bayes_nll": test_bayes_nll,
     "final_val_nll": final_val_metrics["loss"],
@@ -881,3 +917,531 @@ metadata = {
 with open(OUTPUT_ROOT / "run_metadata.json", "w", encoding="utf-8") as f:
     json.dump(metadata, f, indent=2)
 print(f"Saved metadata to {OUTPUT_ROOT / 'run_metadata.json'}")
+
+
+# %%
+def build_sequence_split(n_seq: int, seed: int):
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n_seq)
+    split = n_seq // 2
+    return perm[:split], perm[split:]
+
+
+def fit_readouts_for_cache(cache_blob: dict, layer_name: str, target_name: str, seed: int = 0):
+    acts = cache_blob[layer_name]
+    targets = cache_blob[target_name]
+    component_ids = cache_blob["component_ids"]
+
+    train_idx, test_idx = build_sequence_split(acts.shape[0], cfg.seed + seed)
+    train_idx = torch.from_numpy(train_idx)
+    test_idx = torch.from_numpy(test_idx)
+
+    x_train, y_train, comp_train = flatten_for_readout(acts[train_idx], targets[train_idx], component_ids[train_idx])
+    x_test, y_test, comp_test = flatten_for_readout(acts[test_idx], targets[test_idx], component_ids[test_idx])
+
+    global_w = affine_lstsq_fit(x_train, y_train)
+    per_component_w = {}
+    for comp_id in sorted(np.unique(comp_train)):
+        mask = comp_train == comp_id
+        per_component_w[int(comp_id)] = affine_lstsq_fit(x_train[mask], y_train[mask])
+
+    return {
+        "global_w": global_w,
+        "per_component_w": per_component_w,
+        "test_acts": acts[test_idx].numpy(),
+        "test_targets": targets[test_idx].numpy(),
+        "test_component_ids": component_ids[test_idx].numpy(),
+        "test_positions": np.tile(np.arange(1, acts.shape[1] + 1), len(test_idx)),
+    }
+
+
+def decode_test_split(bundle: dict, mode: str):
+    test_acts = bundle["test_acts"]
+    test_component_ids = bundle["test_component_ids"]
+    flat_x = test_acts.reshape(-1, test_acts.shape[-1])
+    flat_comp = np.repeat(test_component_ids, test_acts.shape[1])
+
+    if mode == "global":
+        flat_pred = affine_lstsq_predict(flat_x, bundle["global_w"])
+    elif mode == "per_component":
+        flat_pred = np.zeros((flat_x.shape[0], bundle["test_targets"].shape[-1]), dtype=np.float64)
+        for comp_id, weights in bundle["per_component_w"].items():
+            mask = flat_comp == comp_id
+            flat_pred[mask] = affine_lstsq_predict(flat_x[mask], weights)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    return renormalize_simplex(flat_pred)
+
+
+def metrics_by_component(bundle: dict, mode: str):
+    preds = decode_test_split(bundle, mode)
+    truths = bundle["test_targets"].reshape(-1, bundle["test_targets"].shape[-1])
+    comp_ids = np.repeat(bundle["test_component_ids"], bundle["test_acts"].shape[1])
+
+    rows = []
+    for comp_id in sorted(np.unique(comp_ids)):
+        mask = comp_ids == comp_id
+        metrics = regression_metrics(truths[mask], preds[mask])
+        metrics["component_id"] = int(comp_id)
+        metrics["component_name"] = components_by_id[int(comp_id)].name
+        rows.append(metrics)
+    return rows
+
+
+def metrics_by_position(bundle: dict, mode: str):
+    test_acts = bundle["test_acts"]
+    test_targets = bundle["test_targets"]
+    test_component_ids = bundle["test_component_ids"]
+    rows = []
+    for pos in range(test_acts.shape[1]):
+        x = test_acts[:, pos, :]
+        y = test_targets[:, pos, :]
+        if mode == "global":
+            pred = affine_lstsq_predict(x, bundle["global_w"])
+        else:
+            pred = np.zeros_like(y, dtype=np.float64)
+            for comp_id, weights in bundle["per_component_w"].items():
+                mask = test_component_ids == comp_id
+                pred[mask] = affine_lstsq_predict(x[mask], weights)
+        pred = renormalize_simplex(pred)
+        metrics = regression_metrics(y, pred)
+        metrics["position"] = pos + 1
+        rows.append(metrics)
+    return rows
+
+
+def print_metric_rows(title: str, rows: list[dict]):
+    print(title)
+    for row in rows:
+        prefix = row.get("component_name", f"pos {row.get('position', '?')}")
+        print(f"  {prefix}: R^2={row['r2']:.3f}, MSE={row['mse']:.4f}, KL={row['kl']:.4f}")
+
+
+def make_plot_cache(model: nn.Module, data: dict, total_size: int, label: str):
+    plot_indices = select_balanced_indices(data["component_ids"], total_size)
+    plot_inputs = data["tokens"][plot_indices][:, :-1]
+    plot_hidden_targets = data["predictive_next"][plot_indices][:, : cfg.seq_len - 1]
+    plot_process_targets = data["process_posterior"][plot_indices][:, : cfg.seq_len - 1]
+    plot_component_ids = data["component_ids"][plot_indices]
+    packed = capture_activation_cache(
+        model,
+        plot_inputs,
+        plot_hidden_targets,
+        plot_process_targets,
+        plot_component_ids,
+        label=label,
+    )
+    packed["selected_indices"] = plot_indices.clone()
+    return packed
+
+
+def build_reference_geometry(data: dict, total_size: int):
+    indices = select_balanced_indices(data["component_ids"], total_size)
+    filtered = data["filtered_after_obs"][indices].numpy()
+    predictive = data["predictive_next"][indices].numpy()
+    component_ids = data["component_ids"][indices].numpy()
+    positions = np.tile(np.arange(1, cfg.seq_len + 1), filtered.shape[0])
+    repeated_component_ids = np.repeat(component_ids, cfg.seq_len)
+    return {
+        "indices": indices,
+        "filtered": filtered.reshape(-1, 3),
+        "predictive": predictive.reshape(-1, 3),
+        "component_ids": repeated_component_ids,
+        "positions": positions,
+        "n_sequences": filtered.shape[0],
+    }
+
+
+def decode_bundle(bundle: dict, global_w: np.ndarray, per_component_w: dict[int, np.ndarray], mode: str) -> np.ndarray:
+    flat_x = bundle["block2"].reshape(-1, bundle["block2"].shape[-1]).numpy()
+    flat_comp = np.repeat(bundle["component_ids"].numpy(), bundle["block2"].shape[1])
+
+    if mode == "global":
+        flat_pred = affine_lstsq_predict(flat_x, global_w)
+    elif mode == "per_component":
+        flat_pred = np.zeros((flat_x.shape[0], bundle["hidden_targets"].shape[-1]), dtype=np.float64)
+        for comp_id, weights in per_component_w.items():
+            mask = flat_comp == comp_id
+            flat_pred[mask] = affine_lstsq_predict(flat_x[mask], weights)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    return renormalize_simplex(flat_pred)
+
+
+best_hidden_bundle = fit_readouts_for_cache(
+    activation_caches["best"], layer_name="block2", target_name="hidden_targets", seed=101
+)
+hidden_global_rows = metrics_by_component(best_hidden_bundle, mode="global")
+hidden_per_component_rows = metrics_by_component(best_hidden_bundle, mode="per_component")
+print_metric_rows("Hidden belief decode by true component using one global readout", hidden_global_rows)
+print_metric_rows("Hidden belief decode by true component using separate per-component readouts", hidden_per_component_rows)
+
+large_plot_cache = make_plot_cache(
+    model,
+    train_data,
+    total_size=cfg.geometry_plot_sequences_per_component * len(components),
+    label="best_large_plot_cache",
+)
+hidden_truth = large_plot_cache["hidden_targets"].reshape(-1, 3).numpy()
+hidden_positions = np.tile(np.arange(1, cfg.seq_len), large_plot_cache["hidden_targets"].shape[0])
+hidden_comp_ids = np.repeat(large_plot_cache["component_ids"].numpy(), large_plot_cache["block2"].shape[1])
+hidden_pred_global = decode_bundle(
+    large_plot_cache,
+    best_hidden_bundle["global_w"],
+    best_hidden_bundle["per_component_w"],
+    mode="global",
+)
+hidden_pred_component = decode_bundle(
+    large_plot_cache,
+    best_hidden_bundle["global_w"],
+    best_hidden_bundle["per_component_w"],
+    mode="per_component",
+)
+
+aligned_indices = large_plot_cache["selected_indices"]
+aligned_filtered = train_data["filtered_after_obs"][aligned_indices][:, : cfg.seq_len - 1].numpy().reshape(-1, 3)
+aligned_predictive = train_data["predictive_next"][aligned_indices][:, : cfg.seq_len - 1].numpy().reshape(-1, 3)
+aligned_positions = np.tile(np.arange(1, cfg.seq_len), large_plot_cache["hidden_targets"].shape[0])
+aligned_comp_ids = np.repeat(large_plot_cache["component_ids"].numpy(), cfg.seq_len - 1)
+
+print(
+    "Unified hidden-geometry comparison: ground-truth filtered_after_obs, "
+    "ground-truth predictive_next, global decode, and per-component decode."
+)
+print(
+    f"Using {large_plot_cache['hidden_targets'].shape[0]} matched sequences "
+    f"({aligned_filtered.shape[0]} model-visible prefix points) in all four columns."
+)
+print("Columns:")
+print("  1. Ground-truth filtered_after_obs = P(z_t | x_<=t)")
+print("  2. Ground-truth predictive_next = P(z_(t+1) | x_<=t)")
+print("  3. Global linear decode of predictive_next")
+print("  4. Per-component linear decode of predictive_next")
+
+fig, axes = plt.subplots(3, 4, figsize=(18, 14))
+for row_idx, comp_id in enumerate(sorted(np.unique(aligned_comp_ids))):
+    mask = aligned_comp_ids == comp_id
+    comp_name = components_by_id[int(comp_id)].name
+    scatter = plot_simplex_points(
+        axes[row_idx, 0],
+        aligned_filtered[mask],
+        aligned_positions[mask],
+        f"{comp_name}\nGround-truth filtered_after_obs",
+        STATE_NAMES,
+    )
+    plot_simplex_points(
+        axes[row_idx, 1],
+        aligned_predictive[mask],
+        aligned_positions[mask],
+        f"{comp_name}\nGround-truth predictive_next",
+        STATE_NAMES,
+    )
+    plot_simplex_points(
+        axes[row_idx, 2],
+        hidden_pred_global[mask],
+        aligned_positions[mask],
+        f"{comp_name}\nGlobal decode of predictive_next",
+        STATE_NAMES,
+    )
+    plot_simplex_points(
+        axes[row_idx, 3],
+        hidden_pred_component[mask],
+        aligned_positions[mask],
+        f"{comp_name}\nPer-component decode of predictive_next",
+        STATE_NAMES,
+    )
+fig.colorbar(scatter, ax=axes.ravel().tolist(), label="prefix length")
+plt.tight_layout()
+plt.show()
+
+
+# %%
+final_position = cfg.seq_len - 1
+final_mask = hidden_positions == final_position
+
+print(
+    f"Plotting only the final available model-visible prefix position: {final_position}. "
+    f"This corresponds to predicting token {cfg.seq_len} from prefix length {cfg.seq_len - 1}."
+)
+
+aligned_filtered_final = aligned_filtered[final_mask]
+aligned_predictive_final = aligned_predictive[final_mask]
+hidden_truth_final = hidden_truth[final_mask]
+hidden_pred_global_final = hidden_pred_global[final_mask]
+hidden_pred_component_final = hidden_pred_component[final_mask]
+hidden_comp_ids_final = hidden_comp_ids[final_mask]
+hidden_positions_final = hidden_positions[final_mask]
+
+final_rows_global = []
+final_rows_component = []
+for comp_id in sorted(np.unique(hidden_comp_ids_final)):
+    mask = hidden_comp_ids_final == comp_id
+    comp_name = components_by_id[int(comp_id)].name
+    global_metrics = regression_metrics(hidden_truth_final[mask], hidden_pred_global_final[mask])
+    global_metrics["component_name"] = comp_name
+    final_rows_global.append(global_metrics)
+    component_metrics = regression_metrics(hidden_truth_final[mask], hidden_pred_component_final[mask])
+    component_metrics["component_name"] = comp_name
+    final_rows_component.append(component_metrics)
+
+print_metric_rows("Final-prefix hidden belief decode by true component using one global readout", final_rows_global)
+print_metric_rows(
+    "Final-prefix hidden belief decode by true component using separate per-component readouts",
+    final_rows_component,
+)
+
+print("Final-prefix columns:")
+print("  1. Ground-truth filtered_after_obs at the last model-visible prefix")
+print("  2. Ground-truth predictive_next at the last model-visible prefix")
+print("  3. Global decode of predictive_next at the last model-visible prefix")
+print("  4. Per-component decode of predictive_next at the last model-visible prefix")
+
+fig, axes = plt.subplots(3, 4, figsize=(18, 14))
+for row_idx, comp_id in enumerate(sorted(np.unique(hidden_comp_ids_final))):
+    mask = hidden_comp_ids_final == comp_id
+    comp_name = components_by_id[int(comp_id)].name
+    plot_simplex_points_fixed(
+        axes[row_idx, 0],
+        aligned_filtered_final[mask],
+        f"{comp_name}\nGround-truth filtered_after_obs (final prefix)",
+        STATE_NAMES,
+        color="tab:gray",
+    )
+    plot_simplex_points_fixed(
+        axes[row_idx, 1],
+        aligned_predictive_final[mask],
+        f"{comp_name}\nGround-truth predictive_next (final prefix)",
+        STATE_NAMES,
+        color="tab:blue",
+    )
+    plot_simplex_points_fixed(
+        axes[row_idx, 2],
+        hidden_pred_global_final[mask],
+        f"{comp_name}\nGlobal decode (final prefix)",
+        STATE_NAMES,
+        color="tab:orange",
+    )
+    plot_simplex_points_fixed(
+        axes[row_idx, 3],
+        hidden_pred_component_final[mask],
+        f"{comp_name}\nPer-component decode (final prefix)",
+        STATE_NAMES,
+        color="tab:green",
+    )
+plt.tight_layout()
+plt.show()
+
+
+# %%
+best_process_bundle = fit_readouts_for_cache(
+    activation_caches["best"], layer_name="block2", target_name="process_targets", seed=202
+)
+process_global_by_position = metrics_by_position(best_process_bundle, mode="global")
+hidden_global_by_position = metrics_by_position(best_hidden_bundle, mode="global")
+hidden_component_by_position = metrics_by_position(best_hidden_bundle, mode="per_component")
+
+print_metric_rows("Hidden belief decode by prefix position with one global readout", hidden_global_by_position)
+print_metric_rows("Hidden belief decode by prefix position with per-component readouts", hidden_component_by_position)
+print_metric_rows("Process belief decode by prefix position with one global readout", process_global_by_position)
+
+positions = [row["position"] for row in hidden_global_by_position]
+plt.figure(figsize=(10, 4))
+plt.plot(positions, [row["r2"] for row in hidden_global_by_position], marker="o", label="Hidden global")
+plt.plot(positions, [row["r2"] for row in hidden_component_by_position], marker="o", label="Hidden per-component")
+plt.plot(positions, [row["r2"] for row in process_global_by_position], marker="o", label="Process global")
+plt.xlabel("Prefix position")
+plt.ylabel("R^2")
+plt.title(f"Belief decodability by prefix position (block2, best epoch {best_epoch:02d})")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+# %%
+def checkpoint_summary(results: dict, layer_name: str, metric: str = "r2"):
+    rows = []
+    for ckpt_name in results.keys():
+        rows.append(
+            {
+                "checkpoint": ckpt_name,
+                "hidden_global": results[ckpt_name][layer_name]["global"][metric],
+                "hidden_per_component": hidden_results[ckpt_name][layer_name]["per_component_avg"][metric],
+                "process_global": process_results[ckpt_name][layer_name]["global"][metric],
+            }
+        )
+    return rows
+
+
+block2_checkpoint_rows = checkpoint_summary(hidden_results, "block2", metric="r2")
+print("Checkpoint summary for block2 readouts (R^2)")
+for row in block2_checkpoint_rows:
+    print(
+        f"  {checkpoint_label(row['checkpoint'])}: hidden_global={row['hidden_global']:.3f}, "
+        f"hidden_per_component={row['hidden_per_component']:.3f}, process_global={row['process_global']:.3f}"
+    )
+
+plt.figure(figsize=(10, 4))
+checkpoints = [row["checkpoint"] for row in block2_checkpoint_rows]
+xs = np.arange(len(checkpoints))
+plt.plot(xs, [row["hidden_global"] for row in block2_checkpoint_rows], marker="o", label="Hidden global")
+plt.plot(xs, [row["hidden_per_component"] for row in block2_checkpoint_rows], marker="o", label="Hidden per-component")
+plt.plot(xs, [row["process_global"] for row in block2_checkpoint_rows], marker="o", label="Process global")
+plt.xticks(xs, [checkpoint_label(name) for name in checkpoints], rotation=45)
+plt.ylabel("R^2")
+plt.title("Training-dynamics summary for block2 readouts")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+# %%
+def decode_with_fixed_weights(
+    acts: np.ndarray,
+    component_ids: np.ndarray,
+    global_w: np.ndarray,
+    per_component_w: dict[int, np.ndarray] | None = None,
+    mode: str = "global",
+    target_dim: int = 3,
+) -> np.ndarray:
+    flat_x = acts.reshape(-1, acts.shape[-1])
+    flat_comp = np.repeat(component_ids, acts.shape[1])
+
+    if mode == "global":
+        flat_pred = affine_lstsq_predict(flat_x, global_w)
+    elif mode == "per_component":
+        if per_component_w is None:
+            raise ValueError("per_component_w is required for per-component decoding")
+        flat_pred = np.zeros((flat_x.shape[0], target_dim), dtype=np.float64)
+        for comp_id, weights in per_component_w.items():
+            mask = flat_comp == comp_id
+            flat_pred[mask] = affine_lstsq_predict(flat_x[mask], weights)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    return renormalize_simplex(flat_pred)
+
+
+def decode_cache_blob(cache_blob: dict, hidden_bundle: dict, process_bundle: dict):
+    block2_acts = cache_blob["block2"].numpy()
+    component_ids = cache_blob["component_ids"].numpy()
+    positions = np.tile(np.arange(1, block2_acts.shape[1] + 1), block2_acts.shape[0])
+    repeated_comp_ids = np.repeat(component_ids, block2_acts.shape[1])
+
+    hidden_truth = cache_blob["hidden_targets"].numpy().reshape(-1, 3)
+    process_truth = cache_blob["process_targets"].numpy().reshape(-1, 3)
+    hidden_global = decode_with_fixed_weights(
+        block2_acts,
+        component_ids,
+        global_w=hidden_bundle["global_w"],
+        mode="global",
+        target_dim=3,
+    )
+    hidden_component = decode_with_fixed_weights(
+        block2_acts,
+        component_ids,
+        global_w=hidden_bundle["global_w"],
+        per_component_w=hidden_bundle["per_component_w"],
+        mode="per_component",
+        target_dim=3,
+    )
+    process_global = decode_with_fixed_weights(
+        block2_acts,
+        component_ids,
+        global_w=process_bundle["global_w"],
+        mode="global",
+        target_dim=3,
+    )
+    return {
+        "positions": positions,
+        "component_ids": repeated_comp_ids,
+        "hidden_truth": hidden_truth,
+        "hidden_global": hidden_global,
+        "hidden_per_component": hidden_component,
+        "process_truth": process_truth,
+        "process_global": process_global,
+    }
+
+def make_checkpoint_grid_axes(n_panels: int, ncols: int = 4, figsize_per_cell=(4.2, 4.0)):
+    nrows = math.ceil(n_panels / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize_per_cell[0] * ncols, figsize_per_cell[1] * nrows))
+    axes = np.atleast_1d(axes).reshape(nrows, ncols)
+    return fig, axes
+
+
+decoded_checkpoints = {}
+for checkpoint_name, cache_blob in activation_caches.items():
+    decoded_checkpoints[checkpoint_name] = decode_cache_blob(
+        cache_blob=cache_blob,
+        hidden_bundle=best_hidden_bundle,
+        process_bundle=best_process_bundle,
+    )
+
+print(
+    f"Checkpoint grids below use the fixed block2 extractor matrices fitted on the best checkpoint "
+    f"(epoch {best_epoch:02d}) and apply them to each cached checkpoint."
+)
+for checkpoint_name, decoded in decoded_checkpoints.items():
+    print(
+        f"  {checkpoint_label(checkpoint_name)}: "
+        f"hidden_global={regression_metrics(decoded['hidden_truth'], decoded['hidden_global'])['r2']:.3f}, "
+        f"hidden_per_component={regression_metrics(decoded['hidden_truth'], decoded['hidden_per_component'])['r2']:.3f}, "
+        f"process_global={regression_metrics(decoded['process_truth'], decoded['process_global'])['r2']:.3f}"
+    )
+
+
+checkpoint_names = list(decoded_checkpoints.keys())
+
+fig, axes = make_checkpoint_grid_axes(len(checkpoint_names) + 1, ncols=4)
+scatter = plot_simplex_points(
+    axes.flat[0],
+    decoded_checkpoints["best"]["process_truth"],
+    decoded_checkpoints["best"]["positions"],
+    "Ground truth\nProcess belief",
+    ["M1", "M2", "M3"],
+)
+for ax, checkpoint_name in zip(axes.flat[1:], checkpoint_names):
+    decoded = decoded_checkpoints[checkpoint_name]
+    plot_simplex_points(
+        ax,
+        decoded["process_global"],
+        decoded["positions"],
+        f"{checkpoint_label(checkpoint_name)}\nDecoded process belief",
+        ["M1", "M2", "M3"],
+    )
+for ax in axes.flat[len(checkpoint_names) + 1 :]:
+    ax.set_axis_off()
+fig.suptitle("Which process am I in? belief across checkpoints", y=0.995)
+fig.colorbar(scatter, ax=axes.ravel().tolist(), label="prefix length")
+plt.tight_layout()
+plt.show()
+
+
+for comp_id in sorted(components_by_id.keys()):
+    comp_name = components_by_id[comp_id].name
+    fig, axes = make_checkpoint_grid_axes(len(checkpoint_names) + 1, ncols=4)
+    truth_mask = decoded_checkpoints["best"]["component_ids"] == comp_id
+    scatter = plot_simplex_points(
+        axes.flat[0],
+        decoded_checkpoints["best"]["hidden_truth"][truth_mask],
+        decoded_checkpoints["best"]["positions"][truth_mask],
+        f"{comp_name}\nGround truth hidden belief",
+        STATE_NAMES,
+    )
+    for ax, checkpoint_name in zip(axes.flat[1:], checkpoint_names):
+        decoded = decoded_checkpoints[checkpoint_name]
+        mask = decoded["component_ids"] == comp_id
+        plot_simplex_points(
+            ax,
+            decoded["hidden_per_component"][mask],
+            decoded["positions"][mask],
+            f"{checkpoint_label(checkpoint_name)}\nDecoded hidden belief",
+            STATE_NAMES,
+        )
+    for ax in axes.flat[len(checkpoint_names) + 1 :]:
+        ax.set_axis_off()
+    fig.suptitle(f"Hidden belief geometry across checkpoints for {comp_name}", y=0.995)
+    fig.colorbar(scatter, ax=axes.ravel().tolist(), label="prefix length")
+    plt.tight_layout()
+    plt.show()
