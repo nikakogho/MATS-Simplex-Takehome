@@ -93,3 +93,6 @@ Evidence against these predictions would include:
 - no advantage of later layers over earlier layers
 - no meaningful decodability of $P(M | x_{<=t})$
 - activation geometries that fail to resemble the corresponding ground-truth belief geometries even qualitatively
+
+## Results
+Available [here](writeup/takehome_writeup.md)
