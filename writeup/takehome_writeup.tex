@@ -1,0 +1,514 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+\graphicspath{{assets/}{assets/seed50/}}
+\setlist[itemize]{topsep=4pt,itemsep=2pt}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue
+}
+
+\title{MATS Simplex Takehome}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+I study a non-ergodic dataset formed by mixing three Mess3 hidden Markov processes across sequences. Each length-16 sequence is generated entirely by one component, and all components share the visible alphabet \{A, B, C\}. I train a small causal transformer by next-token prediction and compare its residual-stream activations to exact Bayes belief targets.
+
+The main question is whether the learned geometry reflects:
+
+\begin{itemize}
+  \item hidden-state belief within a component
+  \item process-identity belief over which component generated the sequence
+\end{itemize}
+
+Purpose of solving this toy problem is to get a deeper understanding of how neural networks, particularly transformers (and specifically LLMs), might represent concepts in their activations. This could one day potentially scale up to frontier LLMs and help reveal internal ``thought process,'' deception, hidden goals, and other intent more precisely than current mech interp tools alone, although exploring those broader applications is outside this project's scope.
+
+\section{Choosing the Mess3 Components}
+
+Choosing the three Mess3 processes was part of the experiment. I wanted the components to share the same visible alphabet so that process identity could not be read off from surface form, but I also needed them to be distinguishable enough that a length-16 sequence would contain meaningful evidence about which component generated it.
+
+This meant giving up on reproducing the cleanest single-process Sierpinski-like regime and instead optimizing for a stronger multi-process inference problem. I fixed
+
+\begin{itemize}
+  \item \texttt{c0 = (x=0.05, alpha=0.90)}
+\end{itemize}
+
+as a baseline sticky, fairly informative component, and then searched over candidate \texttt{c1} and \texttt{c2} values using an exact Bayes component-identifiability diagnostic. For each candidate triple, I sampled length-16 sequences, computed $P(M \mid x_{\le 16})$ by exact forward filtering, and ranked parameter choices by final component posterior quality.
+
+The search consistently favored:
+
+\begin{itemize}
+  \item a sharper, faster-switching \texttt{c1}
+  \item a much noisier \texttt{c2}
+\end{itemize}
+
+with top candidates clustered around:
+
+\begin{itemize}
+  \item \texttt{c1} near \texttt{(x=0.18, alpha=0.95)}
+  \item \texttt{c2} near \texttt{(x in \{0.03, 0.05, 0.07, 0.09\}, alpha=0.45)}
+\end{itemize}
+
+I chose the final set
+
+\begin{itemize}
+  \item \texttt{c0 = (0.05, 0.90)}
+  \item \texttt{c1 = (0.18, 0.95)}
+  \item \texttt{c2 = (0.05, 0.45)}
+\end{itemize}
+
+because it keeps \texttt{c0} and \texttt{c2} matched in transition dynamics, making that comparison primarily an emission-noise contrast. Under exact Bayes inference on length-16 prefixes, this choice gave:
+
+\begin{itemize}
+  \item average max component posterior at $t=16$: \texttt{0.735}
+  \item average true-component posterior at $t=16$: \texttt{0.643}
+\end{itemize}
+
+These values are far from trivial but high enough to make component identity a meaningful latent variable for the model to infer.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{HMMs.png}
+  \caption{Final Mess3 HMMs.}
+\end{figure}
+
+\section{Ground-Truth Belief Geometry}
+
+For a fixed component, I track:
+
+\begin{itemize}
+  \item $b_t = P(z_t \mid x_{\le t})$ (\texttt{filtered\_after\_obs})
+  \item $q_{t+1} = P(z_{t+1} \mid x_{\le t})$ (\texttt{predictive\_next})
+\end{itemize}
+
+using the row-vector update
+
+\begin{itemize}
+  \item $b_t(i) \propto q_t(i) E_{i,x_t}$
+  \item $q_{t+1} = b_t A$
+\end{itemize}
+
+I also track process identity:
+
+\begin{itemize}
+  \item $P(M=m \mid x_{\le t}) \propto P(x_{\le t} \mid M=m)P(M=m)$
+\end{itemize}
+
+The setup notebook showed that the reachable hidden-state geometry is already structured before any model is trained. Sampling prefixes of increasing length produces progressively richer subsets of the simplex:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{geometry_each_prefix_6.png}
+  \caption{Sampled hidden-state geometry up to prefix length 6.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{geometry_each.png}
+  \caption{Sampled hidden-state geometry up to prefix length 8.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{geometry_each_prefix_11.png}
+  \caption{Sampled hidden-state geometry up to prefix length 11.}
+\end{figure}
+
+The same exact Bayes machinery also gives a ground-truth simplex over process identity:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.7\textwidth]{sampled_which_mess3.png}
+  \caption{Ground-truth process-identity belief geometry.}
+\end{figure}
+
+These plots define the target geometries against which I later compare decoded activations.
+
+\section{Preregistered Predictions}
+
+\subsection{P0: Hidden-state beliefs will be linearly decodable from the residual stream}
+
+A linear or affine map from residual activations to the exact Bayes hidden-state belief vectors should recover a geometry similar to the ground-truth simplex plots.
+
+\subsubsection*{P0.0.0. This will be with the last layer of residual stream}
+
+\subsubsection*{P0.0.1. (alternative, low likelihood) Last layer won't be enough, but a concatenation of all layers of the residual stream at a given prefix will contain the relevant decodable value}
+
+\subsubsection*{P0.1. Activations will organize more like a union of component-specific hidden-state belief geometries than like one single shared geometry}
+
+Each component should resemble its own ground-truth geometry more than one universal shared geometry.
+
+\subsubsection*{P0.2. Alternative: the network may learn partially shared or factorized coordinates}
+
+A single global geometry may still work reasonably well if the network separates ``which process am I in?'' from ``which hidden state am I in?'' in different directions of representation.
+
+I gave this a lower but non-negligible likelihood. The belief geometries differ substantially, so one shared hidden-state structure should not fit perfectly. But component identity is only moderately inferable at length 16, so the training signal might still favor some shared or factorized representation.
+
+\subsection{P1: Process-identity beliefs will also be linearly decodable and trace a 2-simplex over \{M1, M2, M3\}}
+
+I expect the residual stream to contain a decodable approximation to $P(M \mid x_{\le t})$, and for this process-belief geometry to resemble the sampled ground-truth process simplex.
+
+\subsubsection*{P1.1. Later context positions will be more certain of which process is generating this run compared to earlier context positions}
+
+\subsubsection*{P1.2. In the residual stream's extracted beliefs, certainty in process being the second or the third will be high more often than certainty of the first, due to how ground-truth probabilities are distributed}
+
+\subsubsection*{P1.3. The process-belief geometry will be skewed rather than uniformly filling the simplex}
+
+Because the three chosen processes are not equally easy to distinguish from typical sampled prefixes, I expect the reachable process-belief states in activation space to concentrate in a non-uniform region of the simplex, just as in the ground-truth process plot.
+
+\subsection{P2: Early in training, a factorized or simplified view will dominate, and later the model will shift toward more separated representations}
+
+I treat this as a training-dynamics prediction: earlier checkpoints should be better explained by simpler or more shared readouts, while later checkpoints should show stronger separation between process-specific and hidden-state-specific structure.
+
+\section{Model and Training Setup}
+
+\begin{itemize}
+  \item Dataset size: 30k train / 3k val / 3k test, balanced across components
+  \item Sequence length: 16
+  \item Model: 2-layer pre-LN causal transformer with \texttt{d\_model=64}, 2 heads, and \texttt{d\_mlp=256}
+  \item Objective: next-token prediction on all 15 model-visible positions
+\end{itemize}
+
+I ran the experiment twice:
+
+\begin{itemize}
+  \item primary run with seed \texttt{42}
+  \item confirmation run with seed \texttt{50}
+\end{itemize}
+
+The seed-42 run provides the headline metrics below. The seed-50 run reached its best checkpoint at epoch \texttt{15} and reproduced the same qualitative picture, so I use it as a robustness check rather than as a separate full-scale experiment.
+
+\section{Prediction Quality}
+
+In the primary seed-42 run, the best checkpoint was epoch \texttt{21}. The model came very close to the exact Bayes next-token baseline on held-out data:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Metric & Value \\
+    \midrule
+    Best epoch & 21 \\
+    Val NLL & 0.9488 \\
+    Test NLL & 0.9519 \\
+    Bayes val NLL & 0.9465 \\
+    Bayes test NLL & 0.9495 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Prediction quality for the primary seed-42 run.}
+\end{table}
+
+This is close to the Bayes ceiling, so the transformer learned most of the predictive structure available in the dataset.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.9\textwidth]{Bayes_vs_transformer.png}
+  \caption{Exact Bayes next-token baseline.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.9\textwidth]{training_curves.png}
+  \caption{Training curves for the primary run.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.85\textwidth]{model_vs_bayes_pos.png}
+  \caption{Model versus Bayes by prediction position.}
+\end{figure}
+
+\section{Hidden-State and Process Beliefs at the Best Checkpoint}
+
+At the best checkpoint, block-2 residual activations support strong linear decoding of both hidden-state belief and process identity:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{state_and_process_ground_truth_vs_decoded.png}
+  \caption{Ground truth versus decoded hidden and process beliefs.}
+\end{figure}
+
+For hidden-state belief, the most important quantitative result is the gap between one global readout and separate per-component readouts:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Readout target & Block2 $R^2$ \\
+    \midrule
+    Hidden belief, global linear readout & 0.864 \\
+    Hidden belief, per-component linear readouts (avg) & 0.943 \\
+    Process belief, global linear readout & 0.817 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Best-checkpoint block-2 readout performance.}
+\end{table}
+
+By true component over all model-visible prefixes:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    Component & Hidden global $R^2$ & Hidden per-component $R^2$ \\
+    \midrule
+    \texttt{mess3\_c0\_x005\_a090} & 0.917 & 0.976 \\
+    \texttt{mess3\_c1\_x018\_a095} & 0.841 & 0.997 \\
+    \texttt{mess3\_c2\_x005\_a045} & 0.301 & 0.853 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Hidden-state decoding by true component at the best seed-42 checkpoint.}
+\end{table}
+
+The noisy component \texttt{c2} is the clearest case where a single shared hidden-state map underperforms while a per-component map still recovers the target well. This strongly suggests that the learned hidden-state geometry is at least partly component-specific.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{ground_truth_vs_decoded_each_component.png}
+  \caption{Ground truth versus decoded hidden-state geometry by component.}
+\end{figure}
+
+The final-prefix view is consistent with the same story:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{ground_vs_dec_finals.png}
+  \caption{Final-prefix hidden-state geometry by component.}
+\end{figure}
+
+Process identity behaves differently. It is weakly decodable in embeddings, improves in block 1, and becomes strongly decodable in block 2, which supports the claim that the network learns a representation of $P(M \mid x_{\le t})$ rather than merely tracking within-process hidden state.
+
+\section{Additional Analysis: Global Versus Per-Component Readouts}
+
+My main additional analysis compares one global linear readout against separate per-component linear readouts. This directly tests whether the learned geometry is shared across components or partly component-specific.
+
+The result is asymmetric:
+
+\begin{itemize}
+  \item hidden-state belief is much better decoded by separate per-component linear maps than by one global map
+  \item process identity is well decoded by one global linear map
+\end{itemize}
+
+This points to a partially factorized representation:
+
+\begin{itemize}
+  \item shared-ish coordinates for ``which process am I in?''
+  \item more component-specific coordinates for ``what hidden-state belief do I have within this process?''
+\end{itemize}
+
+This is more interesting than either extreme of fully separate manifolds or one fully shared hidden simplex.
+
+\section{Training Dynamics}
+
+The training-dynamics story requires some care. If I fit a fresh linear probe separately at each checkpoint, I get the following block-2 summary in the seed-42 run:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lrrr}
+    \toprule
+    Checkpoint & Hidden global $R^2$ & Hidden per-component $R^2$ & Process global $R^2$ \\
+    \midrule
+    init & 0.811 & 0.938 & 0.194 \\
+    epoch 1 & 0.846 & 0.898 & 0.466 \\
+    epoch 15 & 0.864 & 0.935 & 0.808 \\
+    epoch 29 & 0.863 & 0.941 & 0.795 \\
+    epoch 43 & 0.856 & 0.925 & 0.739 \\
+    best (epoch 21) & 0.864 & 0.943 & 0.817 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Checkpoint-by-checkpoint fresh-probe summary for seed 42.}
+\end{table}
+
+The checkpoint-quality curves summarize that trend:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.9\textwidth]{hidden_state_readout_qual_checkpoints.png}
+  \caption{Hidden-state readout quality across checkpoints.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=.9\textwidth]{process_readout_qual_checkpoints.png}
+  \caption{Process readout quality across checkpoints.}
+\end{figure}
+
+Taken naively, the checkpoint-by-checkpoint probes make hidden belief look highly decodable even at initialization. I do \textbf{not} interpret that as evidence that the untrained model already performs correct belief updates. A safer interpretation is that hidden-state targets are strongly correlated with local token evidence, especially in the high-$\alpha$ components, and that a fresh probe can recover part of that local signal from random token and positional features.
+
+To test whether the \textbf{learned geometry itself} is present early, I also apply the fixed best-checkpoint extractor back to earlier checkpoints. That is a much stricter test, and it shows that the final learned geometry is not simply present in the random network from the start. The pooled process-belief checkpoint grid looks like this:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{which_process_checkpoints.png}
+  \caption{Process-belief geometry across checkpoints.}
+\end{figure}
+
+The overall lesson is:
+
+\begin{itemize}
+  \item fresh probes can recover some local hidden-state signal from early random features
+  \item aligned block-2 geometry for both hidden belief and process belief emerges through training
+  \item process identity is the clearest thing the model learns strongly from scratch
+\end{itemize}
+
+\section{Second Seed Check}
+
+I reran the experiment with seed \texttt{50} as a qualitative robustness check. The best checkpoint in that run occurred earlier, at epoch \texttt{15}, but the overall representational story remained the same: process identity sharpened through training, while component-conditioned visualizations still showed that hidden-state decoding is cleaner with per-component readouts than with a single shared hidden-state map.
+
+At the best seed-50 checkpoint, the main block-2 readout numbers were:
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    Metric & Seed 42 & Seed 50 \\
+    \midrule
+    Best epoch & 21 & 15 \\
+    Hidden belief, global $R^2$ & 0.864 & 0.869 \\
+    Hidden belief, per-component avg $R^2$ & 0.943 & 0.948 \\
+    Process belief, global $R^2$ & 0.817 & 0.797 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Seed-42 versus seed-50 robustness summary.}
+\end{table}
+
+So the second run did not exactly reproduce every number, but it did reproduce the main qualitative findings:
+
+\begin{itemize}
+  \item hidden-state belief remains strongly decodable
+  \item per-component hidden readouts remain clearly better than a single global hidden readout
+  \item process identity remains globally decodable in the final block
+  \item the best checkpoint occurs relatively early rather than at the very end of training
+\end{itemize}
+
+The seed-50 run is especially useful for the new component-conditioned process-belief grids. Looking only at sequences that were truly generated by a given component makes it easier to see how the process posterior evolves for that subpopulation:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{process_belief_across_each_true_process.png}
+  \caption{Process beliefs for true processes, seed 50.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{process_0_checkpoints.png}
+  \caption{Seed-50 process-belief checkpoints for true process 0 sequences.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{process_1_checkpoints.png}
+  \caption{Seed-50 process-belief checkpoints for true process 1 sequences.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{process_2_checkpoints.png}
+  \caption{Seed-50 process-belief checkpoints for true process 2 sequences.}
+\end{figure}
+
+The same run also gives component-conditioned hidden-state views:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{states_true.png}
+  \caption{Component-conditioned hidden-state views, seed 50.}
+\end{figure}
+
+and their evolution across checkpoints:
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{state_true_m1.png}
+  \caption{Hidden-state checkpoint evolution for true process 1, seed 50.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{state_true_m2.png}
+  \caption{Hidden-state checkpoint evolution for true process 2, seed 50.}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{state_true_m3.png}
+  \caption{Hidden-state checkpoint evolution for true process 3, seed 50.}
+\end{figure}
+
+Taken together, the seed-42 and seed-50 runs suggest that the main conclusions are not an artifact of a single random seed. The exact best epoch moves, but the qualitative geometry story is stable.
+
+\section{Assessment of Preregistered Predictions}
+
+\subsection{P0: Hidden-state beliefs will be linearly decodable from the residual stream}
+
+Supported. Later residual activations, especially in block 2, decode hidden-state belief strongly.
+
+\subsubsection*{P0.0.0: This will be with the last layer of residual stream}
+
+Supported. In both runs, block-2 activations alone were enough for strong linear decoding of hidden-state belief, so the main prediction was satisfied by the final residual stream without needing a more elaborate representation.
+
+\subsubsection*{P0.0.1: Last layer will not be enough, but concatenating all layers will work}
+
+Not supported, or at least not needed. I did not need to concatenate layers to recover the main geometry. Block 2 by itself already gave strong hidden-belief decoding in both seeds.
+
+\subsubsection*{P0.1: Activations will organize more like a union of component-specific hidden geometries than one shared geometry}
+
+Supported. Per-component hidden readouts outperform the global hidden readout by a meaningful margin in both runs, especially on the noisy component \texttt{c2}. This is the clearest evidence that the hidden-state geometry is not captured equally well by one shared linear coordinate system.
+
+\subsubsection*{P0.2: Alternative factorized/shared representation}
+
+Partially supported. The model does not use one fully shared hidden-belief geometry, but the process-belief results suggest that some shared factorization does exist. The best interpretation is neither fully separate nor fully shared, but partially factorized: process identity is represented more globally, while hidden-state belief remains more component-specific.
+
+\subsection{P1: Process-identity beliefs will also be linearly decodable}
+
+Supported. Block-2 activations support strong global decoding of $P(M \mid x_{\le t})$, and the decoded process-belief geometry qualitatively matches the skewed ground-truth process simplex.
+
+\subsubsection*{P1.1: Later context positions will be more certain about which process generated the run}
+
+Partially supported. Very early positions are clearly less informative than later ones, and process-belief decoding improves sharply after the first few tokens. However, the position-by-position process-belief $R^2$ is not monotone all the way to the end of the sequence. The evidence supports a weaker version of the claim: process identity becomes much more recoverable after a short prefix, but later positions do not improve in a strictly increasing way.
+
+\subsubsection*{P1.2: Certainty in process 2 or 3 will be high more often than certainty in process 1}
+
+Qualitatively supported. The ground-truth process simplex is visibly skewed away from the \texttt{M1} corner, and the decoded process-belief plots from both runs preserve that same asymmetry. I do not treat this as a strongly quantified result, but the visual evidence matches the preregistered expectation.
+
+\subsubsection*{P1.3: The process-belief geometry will be skewed rather than uniformly filling the simplex}
+
+Supported. Both the exact Bayes geometry and the decoded geometry occupy a strongly non-uniform region of the process simplex rather than filling it evenly.
+
+\subsection{P2: Training will move from simpler/shared structure toward separated process-specific structure}
+
+Partially supported, with an important revision. A fresh probe can recover some hidden-belief signal even at initialization, especially because hidden-state targets are correlated with local token evidence in the high-$\alpha$ components. But that does not mean the full learned geometry is already present in the random network. When I apply the fixed best-checkpoint extractor back to earlier checkpoints, both runs show that the aligned geometry is much weaker at init and only becomes clean later in training. The strongest and most robust training effect is on sequence-level component inference: process belief is weak at init and emerges sharply through training.
+
+\section{Conclusion}
+
+This experiment shows that a small transformer trained on a non-ergodic mixture of Mess3 processes can learn near-Bayes-optimal next-token prediction while developing residual-stream geometry that reflects both hidden-state belief and process identity. The representation is not best described as one completely shared simplex or three completely separate manifolds. Instead, it appears partially factorized: process identity is decoded well by a global linear map, while hidden-state belief is decoded much better by per-component maps.
+
+The parameter search, the primary seed-42 run, and the qualitative seed-50 rerun all point to the same conclusion: this non-ergodic Mess3 mixture supports a meaningful latent-inference problem, and the transformer's residual stream learns geometry that tracks that structure.
+
+\section{Limitations}
+
+This experiment does not test whether a larger model would learn a meaningfully different internal geometry, even if its predictive performance cannot exceed the exact Bayes ceiling on this task. It also does not test how sensitive the results are to different choices of Mess3 components beyond the parameter search used here.
+
+More importantly, this is still a toy setting. In this dataset, each sequence is generated entirely by one component, whereas in real language-model settings the relevant ``mode'' can change within a single sequence, for example when a conversation switches from English to Russian and then to writing Python code. Extending this style of analysis to settings with within-sequence mode changes would be much closer to realistic LLM behavior.
+
+Future work (after a few more breakthroughs in understanding this process more deeply) could look for ways to automate and scale this kind of pipeline, first to GPT-2-scale models and eventually to frontier models.
+
+\end{document}

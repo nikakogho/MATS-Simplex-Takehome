@@ -314,3 +314,11 @@ Partially supported, with an important revision. A fresh probe can recover some 
 This experiment shows that a small transformer trained on a non-ergodic mixture of Mess3 processes can learn near-Bayes-optimal next-token prediction while developing residual-stream geometry that reflects both hidden-state belief and process identity. The representation is not best described as one completely shared simplex or three completely separate manifolds. Instead, it appears partially factorized: process identity is decoded well by a global linear map, while hidden-state belief is decoded much better by per-component maps.
 
 The parameter search, the primary seed-42 run, and the qualitative seed-50 rerun all point to the same conclusion: this non-ergodic Mess3 mixture supports a meaningful latent-inference problem, and the transformer's residual stream learns geometry that tracks that structure.
+
+## Limitations
+
+This experiment does not test whether a larger model would learn a meaningfully different internal geometry, even if its predictive performance cannot exceed the exact Bayes ceiling on this task. It also does not test how sensitive the results are to different choices of Mess3 components beyond the parameter search used here.
+
+More importantly, this is still a toy setting. In this dataset, each sequence is generated entirely by one component, whereas in real language-model settings the relevant "mode" can change within a single sequence, for example when a conversation switches from English to Russian and then to writing Python code. Extending this style of analysis to settings with within-sequence mode changes would be much closer to realistic LLM behavior.
+
+Future work (after a few more breakthroughs in understanding this process more deeply) could look for ways to automate and scale this kind of pipeline, first to GPT-2-scale models and eventually to frontier models.
