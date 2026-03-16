@@ -46,7 +46,7 @@ class ExperimentConfig:
     log_every_steps: int = 50
     n_cache_checkpoints: int = 10
     cache_subset_size: int = 512
-    num_workers: int = 2
+    num_workers: int = 0
     output_root: str = "./takehome_outputs"
 
 
