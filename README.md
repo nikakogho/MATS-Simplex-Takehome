@@ -5,4 +5,10 @@ For Simplex takehome, building a dataset where each entry is a sample from one o
 2. x = 0.18 and α = 0.95
 3. x = 0.05 and α = 0.45
 
+Chose these numbers to make them reasonably likely to be differentiated under perfect bayesian inference
+
+### Markov Models
 ![Markov Models](assets/HMMs.png)
+
+### Geometry Of Each
+![Geometry Each](assets/geometry_each.png)
